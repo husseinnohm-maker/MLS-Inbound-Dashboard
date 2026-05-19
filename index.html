@@ -31,7 +31,7 @@
     <!-- Google Fonts (Inter) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght=300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -78,6 +78,82 @@
         // Hardcoded Default Published Google Sheet CSV URL as requested
         const DEFAULT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQUlga7d_wzD6jI-nCCPYgzPtyXalpfewpiKvsy00szeprYTyb0g3BIHs4aKx4n7LqVv8HZTMOUp5gu/pub?output=csv";
 
+        // Reusable custom React component for elegant slate multi-selection dropdowns
+        function MultiSelect({ label, options, selectedValues, onChange, placeholder }) {
+            const [isOpen, setIsOpen] = useState(false);
+            const dropdownRef = useRef(null);
+
+            useEffect(() => {
+                function handleClickOutside(event) {
+                    if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+                        setIsOpen(false);
+                    }
+                }
+                document.addEventListener("mousedown", handleClickOutside);
+                return () => document.removeEventListener("mousedown", handleClickOutside);
+            }, []);
+
+            const toggleOption = (val) => {
+                if (selectedValues.includes(val)) {
+                    onChange(selectedValues.filter(v => v !== val));
+                } else {
+                    onChange([...selectedValues, val]);
+                }
+            };
+
+            const selectAll = () => {
+                onChange([...options]);
+            };
+
+            const clearAll = () => {
+                onChange([]);
+            };
+
+            return (
+                <div className="space-y-1 relative" ref={dropdownRef}>
+                    <label className="text-[9px] text-slate-400 uppercase font-semibold block">{label}</label>
+                    <button
+                        type="button"
+                        onClick={() => setIsOpen(!isOpen)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium flex items-center justify-between text-left h-[28px] hover:border-slate-700 transition"
+                    >
+                        <span className="truncate">
+                            {selectedValues.length === 0 
+                                ? `ALL ${placeholder || ''}` 
+                                : `${selectedValues.length} Selected`
+                            }
+                        </span>
+                        <i className="fa-solid fa-chevron-down text-[8px] text-slate-500"></i>
+                    </button>
+                    
+                    {isOpen && (
+                        <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded shadow-xl max-h-56 overflow-y-auto p-1.5 space-y-1.5 min-w-[150px]">
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-1 text-[9px] font-bold text-slate-400 px-1">
+                                <button type="button" onClick={selectAll} className="hover:text-neonBlue">All</button>
+                                <button type="button" onClick={clearAll} className="hover:text-crimsonNeon">None</button>
+                            </div>
+                            <div className="space-y-0.5 max-h-40 overflow-y-auto pr-0.5">
+                                {options.map(opt => {
+                                    const isChecked = selectedValues.includes(opt);
+                                    return (
+                                        <label key={opt} className="flex items-center gap-2 px-1 py-1 hover:bg-slate-800 rounded cursor-pointer text-[10px] text-slate-300 select-none">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={isChecked}
+                                                onChange={() => toggleOption(opt)}
+                                                className="rounded bg-slate-950 border-slate-700 text-neonBlue focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5 accent-cyan-500 cursor-pointer"
+                                            />
+                                            <span className="truncate">{opt || '(Blank)'}</span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         function App() {
             // State variables
             const [dataset, setDataset] = useState([]);
@@ -88,18 +164,18 @@
             const [gdriveConfig, setGdriveConfig] = useState({ clientId: '', sheetUrl: DEFAULT_CSV_URL });
             const [toasts, setToasts] = useState([]);
             
-            // Slicers State
+            // Slicers State as arrays for multiple-selection options
             const [slicers, setSlicers] = useState({
-                year: 'ALL',
-                month: 'ALL',
-                date: 'ALL',
-                division: 'ALL',
-                warehouse: 'ALL',
-                trxType: 'ALL',
-                shipmentType: 'ALL',
-                inboundType: 'ALL',
-                grnStatus: 'ALL',
-                delayReason: 'ALL',
+                year: [],
+                month: [],
+                date: [],
+                division: [],
+                warehouse: [],
+                trxType: [],
+                shipmentType: [],
+                inboundType: [],
+                grnStatus: [],
+                delayReason: [],
                 searchTerm: ''
             });
 
@@ -414,23 +490,23 @@
             // Global Filter Logic applying to dataset
             const filteredDataset = useMemo(() => {
                 return dataset.filter(row => {
-                    // Global slicers check
-                    if (slicers.year !== 'ALL') {
+                    // Global multiple selection slicers check
+                    if (slicers.year.length > 0) {
                         const rowYear = row.Date.split('-')[2];
-                        if (rowYear !== slicers.year) return false;
+                        if (!slicers.year.includes(rowYear)) return false;
                     }
-                    if (slicers.month !== 'ALL') {
+                    if (slicers.month.length > 0) {
                         const rowMonth = row.Date.split('-')[1];
-                        if (rowMonth !== slicers.month) return false;
+                        if (!slicers.month.includes(rowMonth)) return false;
                     }
-                    if (slicers.date !== 'ALL' && row.Date !== slicers.date) return false;
-                    if (slicers.division !== 'ALL' && row.Division !== slicers.division) return false;
-                    if (slicers.warehouse !== 'ALL' && row.WH !== slicers.warehouse) return false;
-                    if (slicers.trxType !== 'ALL' && row.Trx_Type !== slicers.trxType) return false;
-                    if (slicers.shipmentType !== 'ALL' && row.Shipment_Type !== slicers.shipmentType) return false;
-                    if (slicers.inboundType !== 'ALL' && row.Inbound_Type !== slicers.inboundType) return false;
-                    if (slicers.grnStatus !== 'ALL' && row.GRN_Status !== slicers.grnStatus) return false;
-                    if (slicers.delayReason !== 'ALL' && row.Delay_Reason !== slicers.delayReason) return false;
+                    if (slicers.date.length > 0 && !slicers.date.includes(row.Date)) return false;
+                    if (slicers.division.length > 0 && !slicers.division.includes(row.Division)) return false;
+                    if (slicers.warehouse.length > 0 && !slicers.warehouse.includes(row.WH)) return false;
+                    if (slicers.trxType.length > 0 && !slicers.trxType.includes(row.Trx_Type)) return false;
+                    if (slicers.shipmentType.length > 0 && !slicers.shipmentType.includes(row.Shipment_Type)) return false;
+                    if (slicers.inboundType.length > 0 && !slicers.inboundType.includes(row.Inbound_Type)) return false;
+                    if (slicers.grnStatus.length > 0 && !slicers.grnStatus.includes(row.GRN_Status)) return false;
+                    if (slicers.delayReason.length > 0 && !slicers.delayReason.includes(row.Delay_Reason)) return false;
 
                     // Table Inline dropdown headers logic
                     for (const [colKey, filterVal] of Object.entries(tableHeaderFilters)) {
@@ -459,16 +535,16 @@
             // Clear all filters
             const handleClearAllFilters = () => {
                 setSlicers({
-                    year: 'ALL',
-                    month: 'ALL',
-                    date: 'ALL',
-                    division: 'ALL',
-                    warehouse: 'ALL',
-                    trxType: 'ALL',
-                    shipmentType: 'ALL',
-                    inboundType: 'ALL',
-                    grnStatus: 'ALL',
-                    delayReason: 'ALL',
+                    year: [],
+                    month: [],
+                    date: [],
+                    division: [],
+                    warehouse: [],
+                    trxType: [],
+                    shipmentType: [],
+                    inboundType: [],
+                    grnStatus: [],
+                    delayReason: [],
                     searchTerm: ''
                 });
                 setTableHeaderFilters({});
@@ -477,11 +553,17 @@
 
             // Interactive chart filters trigger
             const handleSegmentChartFilter = (categoryName, value) => {
-                setSlicers(prev => ({
-                    ...prev,
-                    [categoryName]: value
-                }));
-                showToast(`Filter applied: ${categoryName} = ${value}`, "info");
+                setSlicers(prev => {
+                    const currentList = prev[categoryName] || [];
+                    const updatedList = currentList.includes(value)
+                        ? currentList.filter(v => v !== value)
+                        : [...currentList, value];
+                    return {
+                        ...prev,
+                        [categoryName]: updatedList
+                    };
+                });
+                showToast(`Filter updated: ${categoryName} = ${value}`, "info");
             };
 
             // Supply Chain Metrics Calculations
@@ -493,6 +575,7 @@
                         totalQty: 0,
                         onTimeReceivingRate: 0,
                         grnComplianceRate: 0,
+                        grnPendingRate: 0,
                         qualityIssues: 0,
                         palletsHandled: 0,
                         putAwayLines: 0,
@@ -557,18 +640,27 @@
                     ? ((compliantOffloadRowsCount / validOffloadRowsCount) * 100).toFixed(1)
                     : "0.0";
 
-                // 5. GRN Compliance Rate
-                // Compliant = rows where "GRN KPI" equals "On-time" or "Received"
-                // Non-compliant = blanks ("Pending") and "Error with Dates"
+                // 5. GRN Compliance Rate & GRN Pending Rate Box Calculations
                 let compliantGRNCount = 0;
+                let pendingGRNCount = 0;
                 filteredDataset.forEach(row => {
                     const kpiVal = (row.GRN_KPI || '').toLowerCase().trim();
+                    const statusVal = (row.GRN_Status || '').toLowerCase().trim();
+
                     if (kpiVal === 'on-time' || kpiVal === 'received' || kpiVal === 'on time') {
                         compliantGRNCount++;
                     }
+                    if (statusVal === 'pending' || statusVal === '') {
+                        pendingGRNCount++;
+                    }
                 });
+
                 const grnComplianceRate = filteredDataset.length > 0
                     ? ((compliantGRNCount / filteredDataset.length) * 100).toFixed(1)
+                    : "0.0";
+
+                const grnPendingRate = filteredDataset.length > 0
+                    ? ((pendingGRNCount / filteredDataset.length) * 100).toFixed(1)
                     : "0.0";
 
                 // 6. Quality Issues
@@ -601,6 +693,7 @@
                     totalQty,
                     onTimeReceivingRate,
                     grnComplianceRate,
+                    grnPendingRate,
                     qualityIssues,
                     palletsHandled,
                     putAwayLines,
@@ -914,14 +1007,27 @@
                 }
             }, [filteredDataset]);
 
-            // Chart F Render (Root-Cause Delay Pareto Matrix)
+            // Chart F Render (Root-Cause Delay Pareto Matrix - filtered to hide 'No Delay / Normal' placeholder records)
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
                 const reasons = {};
                 filteredDataset.forEach(row => {
-                    const r = row.Delay_Reason || 'No Delay / Normal';
-                    reasons[r] = (reasons[r] || 0) + 1;
+                    const r = (row.Delay_Reason || '').trim();
+                    if (r) {
+                        const lowerR = r.toLowerCase();
+                        // Exclude non-delay status values to focus exclusively on bottlenecks
+                        if (
+                            lowerR !== 'no delay' && 
+                            lowerR !== 'normal' && 
+                            lowerR !== 'no delay / normal' && 
+                            lowerR !== 'normal inbound' &&
+                            lowerR !== '-' &&
+                            lowerR !== 'n/a'
+                        ) {
+                            reasons[r] = (reasons[r] || 0) + 1;
+                        }
+                    }
                 });
 
                 // Sort descending to establish Pareto representation
@@ -1146,7 +1252,8 @@
 
                                 <div className="mt-8 pt-6 border-t border-slate-800 text-center">
                                     <span className="text-[10px] text-slate-500 uppercase tracking-widest block mb-1">Inbound Logistics Engine</span>
-                                    <span className="text-xs font-semibold text-slate-400 font-mono">Published Link Database Configured</span>
+                                    <span className="text-xs font-semibold text-slate-400 font-mono block">Published Link Database Configured</span>
+                                    <span className="text-xs font-bold text-neonBlue mt-2 block">Made By Hussein Mustafa</span>
                                 </div>
                             </div>
                         </div>
@@ -1268,13 +1375,13 @@
                         </div>
                     </header>
 
-                    {/* STICKY TOP FILTER PANEL */}
+                    {/* STICKY TOP FILTER PANEL WITH MULTIPLE SELECTIONS */}
                     <div className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800/80 shadow-md">
                         <div className="max-w-8xl mx-auto px-6 py-3">
                             <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
                                     <i className="fa-solid fa-sliders text-neonBlue"></i>
-                                    Global Slicers Control Panel
+                                    Global Multi-Select Control Panel
                                 </div>
                                 <div className="flex items-center gap-2">
                                     {/* Active indicators */}
@@ -1290,136 +1397,100 @@
                                 </div>
                             </div>
 
-                            {/* Dropdown filters grid */}
+                            {/* Multiple selection custom select filters grid */}
                             <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-10 gap-2">
                                 
                                 {/* 1. Year */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Year</label>
-                                    <select 
-                                        value={slicers.year} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, year: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Years</option>
-                                        {dynamicSlicerOptions.years.map(y => <option key={y} value={y}>{y}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Year"
+                                    options={dynamicSlicerOptions.years}
+                                    selectedValues={slicers.year}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, year: vals }))}
+                                    placeholder="Years"
+                                />
 
                                 {/* 2. Month */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Month</label>
-                                    <select 
-                                        value={slicers.month} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, month: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Months</option>
-                                        {dynamicSlicerOptions.months.map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Month"
+                                    options={dynamicSlicerOptions.months}
+                                    selectedValues={slicers.month}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, month: vals }))}
+                                    placeholder="Months"
+                                />
 
                                 {/* 3. Date */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Date</label>
-                                    <select 
-                                        value={slicers.date} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, date: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Dates</option>
-                                        {dynamicSlicerOptions.dates.map(d => <option key={d} value={d}>{d}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Date"
+                                    options={dynamicSlicerOptions.dates}
+                                    selectedValues={slicers.date}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, date: vals }))}
+                                    placeholder="Dates"
+                                />
 
                                 {/* 4. Division */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Division</label>
-                                    <select 
-                                        value={slicers.division} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, division: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Divisions</option>
-                                        {dynamicSlicerOptions.divisions.map(d => <option key={d} value={d}>{d}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Division"
+                                    options={dynamicSlicerOptions.divisions}
+                                    selectedValues={slicers.division}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, division: vals }))}
+                                    placeholder="Divisions"
+                                />
 
                                 {/* 5. Warehouse */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Warehouse</label>
-                                    <select 
-                                        value={slicers.warehouse} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, warehouse: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL WHs</option>
-                                        {dynamicSlicerOptions.warehouses.map(wh => <option key={wh} value={wh}>{wh}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Warehouse"
+                                    options={dynamicSlicerOptions.warehouses}
+                                    selectedValues={slicers.warehouse}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, warehouse: vals }))}
+                                    placeholder="WHs"
+                                />
 
                                 {/* 6. Trx Type */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Trx Type</label>
-                                    <select 
-                                        value={slicers.trxType} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, trxType: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Trx</option>
-                                        {dynamicSlicerOptions.trxTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Trx Type"
+                                    options={dynamicSlicerOptions.trxTypes}
+                                    selectedValues={slicers.trxType}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, trxType: vals }))}
+                                    placeholder="Trx"
+                                />
 
                                 {/* 7. Shipment Type */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Shipment Mode</label>
-                                    <select 
-                                        value={slicers.shipmentType} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, shipmentType: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Modes</option>
-                                        {dynamicSlicerOptions.shipmentTypes.map(s => <option key={s} value={s}>{s}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Shipment Mode"
+                                    options={dynamicSlicerOptions.shipmentTypes}
+                                    selectedValues={slicers.shipmentType}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, shipmentType: vals }))}
+                                    placeholder="Modes"
+                                />
 
                                 {/* 8. Inbound Type */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">Inbound Cargo</label>
-                                    <select 
-                                        value={slicers.inboundType} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, inboundType: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL Cargo</option>
-                                        {dynamicSlicerOptions.inboundTypes.map(i => <option key={i} value={i}>{i}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="Inbound Cargo"
+                                    options={dynamicSlicerOptions.inboundTypes}
+                                    selectedValues={slicers.inboundType}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, inboundType: vals }))}
+                                    placeholder="Cargo"
+                                />
 
                                 {/* 9. GRN Status */}
-                                <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">GRN Status</label>
-                                    <select 
-                                        value={slicers.grnStatus} 
-                                        onChange={(e) => setSlicers(p => ({ ...p, grnStatus: e.target.value }))}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium"
-                                    >
-                                        <option value="ALL">ALL GRN</option>
-                                        {dynamicSlicerOptions.grnStatuses.map(g => <option key={g} value={g}>{g}</option>)}
-                                    </select>
-                                </div>
+                                <MultiSelect 
+                                    label="GRN Status"
+                                    options={dynamicSlicerOptions.grnStatuses}
+                                    selectedValues={slicers.grnStatus}
+                                    onChange={(vals) => setSlicers(p => ({ ...p, grnStatus: vals }))}
+                                    placeholder="GRN"
+                                />
 
                                 {/* 10. Trace Search */}
                                 <div className="space-y-1">
-                                    <label className="text-[9px] text-slate-400 uppercase font-semibold">ASN / PO / Truck Trace</label>
+                                    <label className="text-[9px] text-slate-400 uppercase font-semibold block">ASN / PO / Truck Trace</label>
                                     <div className="relative">
                                         <input 
                                             type="text" 
                                             placeholder="Type search..."
                                             value={slicers.searchTerm}
                                             onChange={(e) => setSlicers(p => ({ ...p, searchTerm: e.target.value }))}
-                                            className="w-full bg-slate-950 border border-slate-800 rounded pl-2 pr-6 py-1 text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium placeholder-slate-600"
+                                            className="w-full bg-slate-950 border border-slate-800 rounded pl-2 pr-6 py-[5px] text-xs text-slate-200 focus:outline-none focus:border-neonBlue font-medium placeholder-slate-600 h-[28px]"
                                         />
                                         {slicers.searchTerm && (
                                             <button 
@@ -1439,8 +1510,8 @@
                     {/* MAIN WORKSPACE CONTENT */}
                     <main className="flex-1 p-6 space-y-6">
 
-                        {/* SUPPLY CHAIN KEY METRIC TILES */}
-                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-9 gap-3">
+                        {/* SUPPLY CHAIN KEY METRIC TILES - Auto Grid scaling for 10 cards */}
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-3">
                             
                             {/* KPI 1 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
@@ -1504,7 +1575,20 @@
                                 </div>
                             </div>
 
-                            {/* KPI 6 */}
+                            {/* KPI 6 - Pending rate metric tile */}
+                            <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between relative overflow-hidden">
+                                <div className="absolute top-0 left-0 w-full h-1 bg-amberNeon"></div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">GRN Pending %</span>
+                                    <i className="fa-solid fa-hourglass-half text-amberNeon text-sm"></i>
+                                </div>
+                                <div className="mt-2">
+                                    <span className="text-xl font-extrabold text-amberNeon">{metrics.grnPendingRate}%</span>
+                                    <div className="text-[9px] text-slate-400 mt-1">Pending inbound loads</div>
+                                </div>
+                            </div>
+
+                            {/* KPI 7 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Quality Issues</span>
@@ -1518,7 +1602,7 @@
                                 </div>
                             </div>
 
-                            {/* KPI 7 */}
+                            {/* KPI 8 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Pallets</span>
@@ -1530,7 +1614,7 @@
                                 </div>
                             </div>
 
-                            {/* KPI 8 */}
+                            {/* KPI 9 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Put-Away Lines</span>
@@ -1542,7 +1626,7 @@
                                 </div>
                             </div>
 
-                            {/* KPI 9 */}
+                            {/* KPI 10 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Avg Offload Time</span>
