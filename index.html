@@ -613,26 +613,35 @@
                 showToast(`Filter updated: ${categoryName} = ${value}`, "info");
             };
 
-            // Enhancement 2 & 7: Master Operations Audit Grid Export Logic
+            // Enhancement 2 & 7: Master Operations Audit Grid Export Logic (Refined)
             const exportToExcel = () => {
                 if (filteredDataset.length === 0) {
                     showToast("No data available to export.", "error");
                     return;
                 }
-                showToast("Generating Excel file...", "info");
                 try {
+                    // Convert dataset visible directly in the grid to sheet
                     const worksheet = XLSX.utils.json_to_sheet(filteredDataset);
                     const workbook = XLSX.utils.book_new();
-                    XLSX.utils.book_append_sheet(workbook, worksheet, "Operations_Audit");
                     
-                    const dateStr = new Date().toISOString().split('T')[0];
-                    const fileName = `Inbound_Audit_${dateStr}.xlsx`;
+                    // Set worksheet tab name exactly as requested: "Inbound Data"
+                    XLSX.utils.book_append_sheet(workbook, worksheet, "Inbound Data");
+                    
+                    // Calculate exact system date when clicked (format: YYYY-MM-DD)
+                    const now = new Date();
+                    const yyyy = now.getFullYear();
+                    const mm = String(now.getMonth() + 1).padStart(2, '0');
+                    const dd = String(now.getDate()).padStart(2, '0');
+                    const dateStr = `${yyyy}-${mm}-${dd}`;
+                    
+                    // Set precise naming convention
+                    const fileName = `Inbound_Data_${dateStr}.xlsx`;
                     
                     XLSX.writeFile(workbook, fileName);
-                    showToast(`Successfully exported ${fileName}`, "success");
+                    showToast("Excel exported successfully.", "success");
                 } catch (err) {
-                    showToast("Failed to export Excel file.", "error");
-                    console.error("Export Error:", err);
+                    showToast("Excel export failed.", "error");
+                    console.error("Export Error Detail:", err);
                 }
             };
 
@@ -901,6 +910,7 @@
                         pie: {
                             donut: {
                                 size: '70%',
+                                opacity: 0.9,
                                 labels: {
                                     show: true,
                                     total: {
