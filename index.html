@@ -81,6 +81,136 @@
         // Hardcoded Default Published Google Sheet CSV URL as requested
         const DEFAULT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQUlga7d_wzD6jI-nCCPYgzPtyXalpfewpiKvsy00szeprYTyb0g3BIHs4aKx4n7LqVv8HZTMOUp5gu/pub?output=csv";
 
+
+        // Stability helpers: normalize text consistently, parse dates safely, and prevent stalled network requests
+        const GRID_PAGE_SIZE = 250;
+        const MAX_DROPDOWN_OPTIONS = 300;
+
+        const cleanText = (value, fallback = '') => {
+            const cleaned = String(value ?? '').trim().replace(/\s+/g, ' ');
+            return cleaned || fallback;
+        };
+
+        const comparableText = (value) => cleanText(value).toLocaleLowerCase();
+        const sameText = (left, right) => comparableText(left) === comparableText(right);
+        const hasSelectedValue = (selectedValues, rowValue) => (
+            selectedValues.length === 0 || selectedValues.some(value => sameText(value, rowValue))
+        );
+
+        // Division values are intentionally standardized to uppercase so case-only differences do not create duplicate filters.
+        const normalizeDivision = (value) => cleanText(value, 'UNKNOWN').toUpperCase();
+
+        const safeNumber = (value) => {
+            const parsed = Number(cleanText(value, '0').replace(/,/g, ''));
+            return Number.isFinite(parsed) ? parsed : 0;
+        };
+
+        const parseSheetDate = (value) => {
+            const raw = cleanText(value, 'N/A');
+            if (!raw || comparableText(raw) === 'n/a') {
+                return { label: 'N/A', year: '', month: '', sort: Number.MAX_SAFE_INTEGER };
+            }
+
+            let day;
+            let month;
+            let year;
+            const directMatch = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+
+            if (directMatch) {
+                day = Number(directMatch[1]);
+                month = Number(directMatch[2]);
+                year = Number(directMatch[3]);
+            } else {
+                const parsedDate = new Date(raw);
+                if (Number.isNaN(parsedDate.getTime())) {
+                    return { label: raw, year: '', month: '', sort: Number.MAX_SAFE_INTEGER };
+                }
+                day = parsedDate.getDate();
+                month = parsedDate.getMonth() + 1;
+                year = parsedDate.getFullYear();
+            }
+
+            const checkDate = new Date(year, month - 1, day);
+            if (
+                Number.isNaN(checkDate.getTime()) ||
+                checkDate.getFullYear() !== year ||
+                checkDate.getMonth() !== month - 1 ||
+                checkDate.getDate() !== day
+            ) {
+                return { label: raw, year: '', month: '', sort: Number.MAX_SAFE_INTEGER };
+            }
+
+            const paddedDay = String(day).padStart(2, '0');
+            const paddedMonth = String(month).padStart(2, '0');
+            return {
+                label: `${paddedDay}-${paddedMonth}-${year}`,
+                year: String(year),
+                month: paddedMonth,
+                sort: Date.UTC(year, month - 1, day)
+            };
+        };
+
+        const parseDurationMinutes = (value) => {
+            const raw = cleanText(value);
+            if (!raw) return null;
+
+            const parts = raw.split(':').map(part => Number(part));
+            if (parts.every(Number.isFinite)) {
+                if (parts.length === 3) return (parts[0] * 60) + parts[1] + (parts[2] / 60);
+                if (parts.length === 2) return (parts[0] * 60) + parts[1];
+            }
+
+            const numeric = Number(raw);
+            return Number.isFinite(numeric) ? numeric : null;
+        };
+
+        const fetchWithTimeout = async (url, options = {}, timeoutMs = 20000) => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                return await fetch(url, { ...options, signal: controller.signal });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        };
+
+        class DashboardErrorBoundary extends React.Component {
+            constructor(props) {
+                super(props);
+                this.state = { hasError: false };
+            }
+
+            static getDerivedStateFromError() {
+                return { hasError: true };
+            }
+
+            componentDidCatch(error, info) {
+                console.error('Dashboard render error:', error, info);
+            }
+
+            render() {
+                if (!this.state.hasError) return this.props.children;
+                return (
+                    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+                        <div className="max-w-lg w-full bg-slate-900 border border-red-500/50 rounded-2xl p-6 shadow-2xl text-center">
+                            <i className="fa-solid fa-triangle-exclamation text-red-400 text-3xl mb-4"></i>
+                            <h1 className="text-lg font-extrabold text-white mb-2">Dashboard recovered from an unexpected error</h1>
+                            <p className="text-xs text-slate-400 leading-relaxed mb-5">
+                                Reload the page to reconnect the sheet. The stability safeguards will prevent large filter results from overloading the audit grid.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => window.location.reload()}
+                                className="bg-red-950 hover:bg-red-900 border border-red-500/60 text-red-200 rounded-lg px-4 py-2 text-xs font-bold"
+                            >
+                                Reload Dashboard
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+        }
+
         // Reusable custom React component for elegant slate multi-selection dropdowns
         function MultiSelect({ label, options, selectedValues, onChange, placeholder }) {
             const [isOpen, setIsOpen] = useState(false);
@@ -129,9 +259,10 @@
             const selectAll = () => onChange([...options]);
             const clearAll = () => onChange([]);
 
-            const filteredOptions = options.filter(opt => 
+            const matchingOptions = options.filter(opt => 
                 String(opt).toLowerCase().includes(searchTerm.toLowerCase())
             );
+            const filteredOptions = matchingOptions.slice(0, MAX_DROPDOWN_OPTIONS);
 
             return (
                 <div className="space-y-1 relative" ref={dropdownRef}>
@@ -169,6 +300,11 @@
                             </div>
 
                             <div className="overflow-y-auto p-1 space-y-0.5 flex-1">
+                                {matchingOptions.length > MAX_DROPDOWN_OPTIONS && (
+                                    <div className="text-[9px] text-amber-400 px-1.5 py-1 border-b border-slate-800">
+                                        Showing first {MAX_DROPDOWN_OPTIONS} matches. Type to narrow the list.
+                                    </div>
+                                )}
                                 {filteredOptions.length === 0 ? (
                                     <div className="text-[10px] text-slate-500 text-center py-2">No matches found</div>
                                 ) : (
@@ -223,6 +359,17 @@
             // Column Dropdown filters state (for inline table headers)
             const [tableHeaderFilters, setTableHeaderFilters] = useState({});
 
+            // Grid pagination prevents the browser from rendering tens of thousands of table rows at once.
+            const [gridPage, setGridPage] = useState(1);
+            const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+
+            useEffect(() => {
+                const timer = setTimeout(() => {
+                    setDebouncedSearchTerm(slicers.searchTerm);
+                }, 250);
+                return () => clearTimeout(timer);
+            }, [slicers.searchTerm]);
+
             // Unique options derived from current FULL imported dataset for filters
             const dynamicSlicerOptions = useMemo(() => {
                 if (!dataset.length) return {
@@ -243,15 +390,9 @@
                 const asns = new Set(); // Enhancement 3: Gather unique ASNs
 
                 dataset.forEach(row => {
-                    if (row.Date) {
-                        dates.add(row.Date);
-                        // Extract year and month if date format allows
-                        const parts = row.Date.split('-');
-                        if (parts.length === 3) {
-                            years.add(parts[2]);
-                            months.add(parts[1]);
-                        }
-                    }
+                    if (row.Date && row.Date !== 'N/A') dates.add(row.Date);
+                    if (row.Date_Year) years.add(row.Date_Year);
+                    if (row.Date_Month) months.add(row.Date_Month);
                     if (row.Division) divisions.add(row.Division);
                     if (row.WH) warehouses.add(row.WH);
                     if (row.Trx_Type) trxTypes.add(row.Trx_Type);
@@ -262,18 +403,20 @@
                     if (row.ASN) asns.add(row.ASN); // Extract ASN
                 });
 
+                const alphabetical = (a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
+
                 return {
                     years: Array.from(years).sort(),
                     months: Array.from(months).sort(),
-                    dates: Array.from(dates).sort((a,b) => new Date(a) - new Date(b)),
-                    divisions: Array.from(divisions).sort(),
-                    warehouses: Array.from(warehouses).sort(),
-                    trxTypes: Array.from(trxTypes).sort(),
-                    shipmentTypes: Array.from(shipmentTypes).sort(),
-                    inboundTypes: Array.from(inboundTypes).sort(),
-                    grnStatuses: Array.from(grnStatuses).sort(),
-                    delayReasons: Array.from(delayReasons).sort(),
-                    asns: Array.from(asns).sort() // Expose ASNs
+                    dates: Array.from(dates).sort((a, b) => parseSheetDate(a).sort - parseSheetDate(b).sort),
+                    divisions: Array.from(divisions).sort(alphabetical),
+                    warehouses: Array.from(warehouses).sort(alphabetical),
+                    trxTypes: Array.from(trxTypes).sort(alphabetical),
+                    shipmentTypes: Array.from(shipmentTypes).sort(alphabetical),
+                    inboundTypes: Array.from(inboundTypes).sort(alphabetical),
+                    grnStatuses: Array.from(grnStatuses).sort(alphabetical),
+                    delayReasons: Array.from(delayReasons).sort(alphabetical),
+                    asns: Array.from(asns).sort(alphabetical) // Expose ASNs
                 };
             }, [dataset]);
 
@@ -328,7 +471,7 @@
                     return false;
                 }
 
-                const headers = rows[0].map(h => h.trim());
+                const headers = rows[0].map(h => cleanText(h));
                 
                 // Helper to locate target column indices
                 const findIdx = (names) => {
@@ -365,32 +508,38 @@
                 const formatted = [];
                 for (let r = 1; r < rows.length; r++) {
                     const rowData = rows[r];
-                    if (!rowData || rowData.length === 0 || (rowData.length === 1 && rowData[0] === "")) continue;
+                    if (!rowData || rowData.length === 0 || rowData.every(cell => cleanText(cell) === '')) continue;
 
-                    // Standardize object structure
+                    const valueAt = (idx, fallback = '') => idx >= 0 ? cleanText(rowData[idx], fallback) : fallback;
+                    const dateMeta = parseSheetDate(valueAt(idxDate, 'N/A'));
+
+                    // Standardize object structure. Division casing is normalized during import to stop duplicate slicer entries.
                     formatted.push({
-                        Ser: rowData[idxSer] || r.toString(),
-                        WH: rowData[idxWH] || 'Unknown',
-                        Date: rowData[idxDate] || 'N/A',
-                        ASN: rowData[idxASN] || 'N/A',
-                        Truck: rowData[idxTruck] || 'N/A',
-                        Division: rowData[idxDivision] || 'Unknown',
-                        Trx_Type: rowData[idxTrxType] || 'N/A',
-                        Shipment_Type: rowData[idxShipmentType] || 'N/A',
-                        Inbound_Type: rowData[idxInboundType] || 'N/A',
-                        Total_Qty: parseInt((rowData[idxTotalQty] || "0").replace(/,/g, '')) || 0,
-                        Good_Qty: parseInt((rowData[idxGoodQty] || "0").replace(/,/g, '')) || 0,
-                        Damage_Qty: parseInt((rowData[idxDamageQty] || "0").replace(/,/g, '')) || 0,
-                        Shortage_Qty: parseInt((rowData[idxShortageQty] || "0").replace(/,/g, '')) || 0,
-                        Excess_Qty: parseInt((rowData[idxExcessQty] || "0").replace(/,/g, '')) || 0,
-                        Total_Pallets: parseInt((rowData[idxTotalPallets] || "0").replace(/,/g, '')) || 0,
-                        GRN_Status: rowData[idxGRNStatus] || 'Pending',
-                        GRN_KPI: rowData[idxGRNKPI] || '',
-                        Off_Loading_Duration: rowData[idxOffLoadingDuration] || '',
-                        Delay_Reason: rowData[idxDelayReason] || '',
-                        PutAway_Lines: parseInt((rowData[idxPutAway] || "0").replace(/,/g, '')) || 0,
-                        Storage_Type: rowData[idxStorageType] || 'Dry',
-                        PO_On_Time: rowData[idxPOOnTime] || ''
+                        Ser: valueAt(idxSer, r.toString()),
+                        WH: valueAt(idxWH, 'Unknown'),
+                        Date: dateMeta.label,
+                        Date_Year: dateMeta.year,
+                        Date_Month: dateMeta.month,
+                        Date_Sort: dateMeta.sort,
+                        ASN: valueAt(idxASN, 'N/A'),
+                        Truck: valueAt(idxTruck, 'N/A'),
+                        Division: normalizeDivision(valueAt(idxDivision, 'Unknown')),
+                        Trx_Type: valueAt(idxTrxType, 'N/A'),
+                        Shipment_Type: valueAt(idxShipmentType, 'N/A'),
+                        Inbound_Type: valueAt(idxInboundType, 'N/A'),
+                        Total_Qty: safeNumber(rowData[idxTotalQty]),
+                        Good_Qty: safeNumber(rowData[idxGoodQty]),
+                        Damage_Qty: safeNumber(rowData[idxDamageQty]),
+                        Shortage_Qty: safeNumber(rowData[idxShortageQty]),
+                        Excess_Qty: safeNumber(rowData[idxExcessQty]),
+                        Total_Pallets: safeNumber(rowData[idxTotalPallets]),
+                        GRN_Status: valueAt(idxGRNStatus, 'Pending'),
+                        GRN_KPI: valueAt(idxGRNKPI),
+                        Off_Loading_Duration: valueAt(idxOffLoadingDuration),
+                        Delay_Reason: valueAt(idxDelayReason),
+                        PutAway_Lines: safeNumber(rowData[idxPutAway]),
+                        Storage_Type: valueAt(idxStorageType, 'Dry'),
+                        PO_On_Time: valueAt(idxPOOnTime)
                     });
                 }
 
@@ -410,7 +559,7 @@
                 try {
                     // Try 1: Direct Fetch - Enhancement 5: Added Cache Buster to prevent stale data
                     const directUrl = `${DEFAULT_CSV_URL}&t=${Date.now()}`;
-                    const directResponse = await fetch(directUrl, { cache: "no-store" });
+                    const directResponse = await fetchWithTimeout(directUrl, { cache: "no-store" });
                     if (!directResponse.ok) {
                         throw new Error(`Direct connection returned HTTP status ${directResponse.status}`);
                     }
@@ -425,7 +574,7 @@
                     try {
                         // Try 2: Proxy Fetch using AllOrigins public proxy with cache buster
                         const proxiedUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(DEFAULT_CSV_URL)}&nocache=${Date.now()}`;
-                        const proxyResponse = await fetch(proxiedUrl);
+                        const proxyResponse = await fetchWithTimeout(proxiedUrl);
                         if (!proxyResponse.ok) {
                             throw new Error(`Proxy stream returned status ${proxyResponse.status}`);
                         }
@@ -498,7 +647,7 @@
                     
                     // Route via AllOrigins CORS proxy
                     const proxiedUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(exportUrl)}&nocache=${Date.now()}`;
-                    const response = await fetch(proxiedUrl);
+                    const response = await fetchWithTimeout(proxiedUrl);
                     if (!response.ok) {
                         throw new Error(`Connection failed. Server status: ${response.status}`);
                     }
@@ -534,49 +683,85 @@
 
             // Global Filter Logic applying to dataset
             const filteredDataset = useMemo(() => {
+                const traceTerm = comparableText(debouncedSearchTerm);
+
                 return dataset.filter(row => {
-                    // Global multiple selection slicers check
-                    if (slicers.year.length > 0) {
-                        const rowYear = row.Date.split('-')[2];
-                        if (!slicers.year.includes(rowYear)) return false;
-                    }
-                    if (slicers.month.length > 0) {
-                        const rowMonth = row.Date.split('-')[1];
-                        if (!slicers.month.includes(rowMonth)) return false;
-                    }
-                    if (slicers.date.length > 0 && !slicers.date.includes(row.Date)) return false;
-                    if (slicers.division.length > 0 && !slicers.division.includes(row.Division)) return false;
-                    if (slicers.warehouse.length > 0 && !slicers.warehouse.includes(row.WH)) return false;
-                    if (slicers.trxType.length > 0 && !slicers.trxType.includes(row.Trx_Type)) return false;
-                    if (slicers.shipmentType.length > 0 && !slicers.shipmentType.includes(row.Shipment_Type)) return false;
-                    if (slicers.inboundType.length > 0 && !slicers.inboundType.includes(row.Inbound_Type)) return false;
-                    if (slicers.grnStatus.length > 0 && !slicers.grnStatus.includes(row.GRN_Status)) return false;
-                    if (slicers.delayReason.length > 0 && !slicers.delayReason.includes(row.Delay_Reason)) return false;
-                    if (slicers.asn.length > 0 && !slicers.asn.includes(row.ASN)) return false; // Enhancement 3: ASN Multi-Select Check
+                    // Global multiple selection slicers check. Comparisons are case-insensitive and whitespace-safe.
+                    if (!hasSelectedValue(slicers.year, row.Date_Year)) return false;
+                    if (!hasSelectedValue(slicers.month, row.Date_Month)) return false;
+                    if (!hasSelectedValue(slicers.date, row.Date)) return false;
+                    if (!hasSelectedValue(slicers.division, row.Division)) return false;
+                    if (!hasSelectedValue(slicers.warehouse, row.WH)) return false;
+                    if (!hasSelectedValue(slicers.trxType, row.Trx_Type)) return false;
+                    if (!hasSelectedValue(slicers.shipmentType, row.Shipment_Type)) return false;
+                    if (!hasSelectedValue(slicers.inboundType, row.Inbound_Type)) return false;
+                    if (!hasSelectedValue(slicers.grnStatus, row.GRN_Status)) return false;
+                    if (!hasSelectedValue(slicers.delayReason, row.Delay_Reason)) return false;
+                    if (!hasSelectedValue(slicers.asn, row.ASN)) return false;
 
                     // Table Inline dropdown headers logic
                     for (const [colKey, filterVal] of Object.entries(tableHeaderFilters)) {
-                        if (filterVal && filterVal !== 'ALL') {
-                            if (row[colKey]?.toString() !== filterVal) {
-                                return false;
-                            }
-                        }
-                    }
-
-                    // Text Trace ASN / PO search check
-                    if (slicers.searchTerm.trim() !== '') {
-                        const term = slicers.searchTerm.toLowerCase();
-                        const matchSer = row.Ser.toLowerCase().includes(term);
-                        const matchASN = row.ASN.toLowerCase().includes(term);
-                        const matchTruck = row.Truck.toLowerCase().includes(term);
-                        if (!matchSer && !matchASN && !matchTruck) {
+                        if (filterVal && filterVal !== 'ALL' && !sameText(row[colKey], filterVal)) {
                             return false;
                         }
                     }
 
+                    // Text Trace ASN / PO search check
+                    if (traceTerm) {
+                        const matchSer = comparableText(row.Ser).includes(traceTerm);
+                        const matchASN = comparableText(row.ASN).includes(traceTerm);
+                        const matchTruck = comparableText(row.Truck).includes(traceTerm);
+                        if (!matchSer && !matchASN && !matchTruck) return false;
+                    }
+
                     return true;
                 });
-            }, [dataset, slicers, tableHeaderFilters]);
+            }, [
+                dataset,
+                slicers.year,
+                slicers.month,
+                slicers.date,
+                slicers.division,
+                slicers.warehouse,
+                slicers.trxType,
+                slicers.shipmentType,
+                slicers.inboundType,
+                slicers.grnStatus,
+                slicers.delayReason,
+                slicers.asn,
+                debouncedSearchTerm,
+                tableHeaderFilters
+            ]);
+
+            const totalGridPages = Math.max(1, Math.ceil(filteredDataset.length / GRID_PAGE_SIZE));
+            const gridStartIndex = (gridPage - 1) * GRID_PAGE_SIZE;
+            const paginatedDataset = useMemo(
+                () => filteredDataset.slice(gridStartIndex, gridStartIndex + GRID_PAGE_SIZE),
+                [filteredDataset, gridStartIndex]
+            );
+
+            useEffect(() => {
+                setGridPage(1);
+            }, [
+                dataset,
+                slicers.year,
+                slicers.month,
+                slicers.date,
+                slicers.division,
+                slicers.warehouse,
+                slicers.trxType,
+                slicers.shipmentType,
+                slicers.inboundType,
+                slicers.grnStatus,
+                slicers.delayReason,
+                slicers.asn,
+                debouncedSearchTerm,
+                tableHeaderFilters
+            ]);
+
+            useEffect(() => {
+                setGridPage(currentPage => Math.min(currentPage, totalGridPages));
+            }, [totalGridPages]);
 
             // Clear all filters
             const handleClearAllFilters = () => {
@@ -686,28 +871,16 @@
                 let totalDurationMinutes = 0;
 
                 filteredDataset.forEach(row => {
-                    const durRaw = row.Off_Loading_Duration;
-                    if (!durRaw || durRaw.trim() === '') return; // Skip entirely as per exclusion rules
-
-                    // Parse duration formatted as "H:MM" or "HH:MM"
-                    let durationInMin = 0;
-                    const durationParts = durRaw.split(':');
-                    if (durationParts.length === 2) {
-                        const h = parseInt(durationParts[0]) || 0;
-                        const m = parseInt(durationParts[1]) || 0;
-                        durationInMin = (h * 60) + m;
-                    } else {
-                        // Numeric fallback or string parse
-                        durationInMin = parseFloat(durRaw) || 0;
-                    }
+                    const durationInMin = parseDurationMinutes(row.Off_Loading_Duration);
+                    if (durationInMin === null) return; // Skip entirely as per exclusion rules
 
                     validOffloadRowsCount++;
                     totalDurationMinutes += durationInMin;
 
                     // SLA Threshold: Palletized vs Un-palletized
-                    if (row.Inbound_Type === 'PALLETIZED') {
+                    if (sameText(row.Inbound_Type, 'PALLETIZED')) {
                         if (durationInMin <= 120) compliantOffloadRowsCount++;
-                    } else if (row.Inbound_Type === 'UN-PALLETIZED') {
+                    } else if (sameText(row.Inbound_Type, 'UN-PALLETIZED')) {
                         if (durationInMin <= 360) compliantOffloadRowsCount++;
                     } else {
                         // Standard generic benchmark fallback if blank type
@@ -797,7 +970,7 @@
                     dateMap[d].trucks.add(row.Truck);
                 });
 
-                const sortedDates = Object.keys(dateMap).sort((a,b) => new Date(a) - new Date(b));
+                const sortedDates = Object.keys(dateMap).sort((a, b) => parseSheetDate(a).sort - parseSheetDate(b).sort);
                 const qtyData = sortedDates.map(d => dateMap[d].qty);
                 const asnData = sortedDates.map(d => dateMap[d].asns);
                 const truckData = sortedDates.map(d => dateMap[d].trucks.size);
@@ -956,11 +1129,12 @@
                 filteredDataset.forEach(row => {
                     const trxIdx = trxTypes.indexOf(row.Trx_Type);
                     if (trxIdx !== -1) {
-                        let status = row.GRN_Status || 'Pending';
-                        if (!seriesMap[status]) {
-                            // If different name, categorize as Pending
-                            status = 'Pending';
-                        }
+                        const statusKey = comparableText(row.GRN_Status);
+                        const status = statusKey === 'sent'
+                            ? 'Sent'
+                            : statusKey === 'received'
+                                ? 'Received'
+                                : 'Pending';
                         seriesMap[status][trxIdx]++;
                     }
                 });
@@ -1057,16 +1231,9 @@
                 const counts = { 'PALLETIZED': 0, 'UN-PALLETIZED': 0 };
 
                 filteredDataset.forEach(row => {
-                    const key = row.Inbound_Type === 'PALLETIZED' ? 'PALLETIZED' : 'UN-PALLETIZED';
-                    const durRaw = row.Off_Loading_Duration;
-                    if (durRaw) {
-                        let durationInMin = 0;
-                        const durationParts = durRaw.split(':');
-                        if (durationParts.length === 2) {
-                            durationInMin = (parseInt(durationParts[0]) * 60) + parseInt(durationParts[1]);
-                        } else {
-                            durationInMin = parseFloat(durRaw) || 0;
-                        }
+                    const key = sameText(row.Inbound_Type, 'PALLETIZED') ? 'PALLETIZED' : 'UN-PALLETIZED';
+                    const durationInMin = parseDurationMinutes(row.Off_Loading_Duration);
+                    if (durationInMin !== null) {
                         sums[key] += durationInMin;
                         counts[key]++;
                     }
@@ -1239,8 +1406,14 @@
 
             // Dynamic Option list generator helper for Header Table Dropdowns
             const getUniqueHeaderFilterOptions = (columnName) => {
-                const vals = new Set(dataset.map(row => row[columnName]?.toString() || ''));
-                return ['ALL', ...Array.from(vals).filter(v => v !== '').sort()];
+                const valuesByKey = new Map();
+                dataset.forEach(row => {
+                    const value = cleanText(row[columnName]);
+                    if (!value) return;
+                    const key = comparableText(value);
+                    if (!valuesByKey.has(key)) valuesByKey.set(key, value);
+                });
+                return ['ALL', ...Array.from(valuesByKey.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))];
             };
 
             return (
@@ -2041,8 +2214,8 @@
                                                 </td>
                                             </tr>
                                         ) : (
-                                            filteredDataset.map((row, index) => (
-                                                <tr key={index} className="hover:bg-slate-800/50 transition">
+                                            paginatedDataset.map((row, index) => (
+                                                <tr key={`${row.Ser}-${gridStartIndex + index}`} className="hover:bg-slate-800/50 transition">
                                                     <td className="p-3 border-r border-slate-800/60 text-slate-400 font-mono">{row.Ser}</td>
                                                     <td className="p-3 border-r border-slate-800/60 font-semibold">{row.WH}</td>
                                                     <td className="p-3 border-r border-slate-800/60 text-slate-300 font-medium whitespace-nowrap">{row.Date}</td>
@@ -2058,8 +2231,8 @@
                                                     <td className="p-3 border-r border-slate-800/60 font-bold text-slate-300">{row.Total_Pallets}</td>
                                                     <td className="p-3 border-r border-slate-800/60">
                                                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                            row.GRN_Status === 'Sent' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' :
-                                                            row.GRN_Status === 'Received' ? 'bg-emerald-950 text-emerald-300 border border-emerald-900' :
+                                                            sameText(row.GRN_Status, 'Sent') ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' :
+                                                            sameText(row.GRN_Status, 'Received') ? 'bg-emerald-950 text-emerald-300 border border-emerald-900' :
                                                             'bg-amber-950 text-amber-400 border border-amber-800'
                                                         }`}>
                                                             {row.GRN_Status}
@@ -2091,6 +2264,37 @@
                                     </tbody>
                                 </table>
                             </div>
+
+                            <div className="px-4 py-3 border-t border-slate-800 bg-slate-950/50 flex flex-wrap items-center justify-between gap-3">
+                                <span className="text-[10px] text-slate-400">
+                                    Showing <strong className="text-neonBlue">{filteredDataset.length === 0 ? 0 : gridStartIndex + 1}</strong>
+                                    {' '}to{' '}
+                                    <strong className="text-neonBlue">{Math.min(gridStartIndex + GRID_PAGE_SIZE, filteredDataset.length)}</strong>
+                                    {' '}of <strong className="text-white">{filteredDataset.length.toLocaleString()}</strong> filtered records.
+                                    Metrics, charts, and exports still use the full filtered dataset.
+                                </span>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        disabled={gridPage <= 1}
+                                        onClick={() => setGridPage(page => Math.max(1, page - 1))}
+                                        className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 rounded px-2.5 py-1 text-[10px] font-bold text-slate-200"
+                                    >
+                                        <i className="fa-solid fa-chevron-left mr-1"></i> Previous
+                                    </button>
+                                    <span className="text-[10px] text-slate-400">
+                                        Page <strong className="text-white">{gridPage}</strong> / {totalGridPages}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        disabled={gridPage >= totalGridPages}
+                                        onClick={() => setGridPage(page => Math.min(totalGridPages, page + 1))}
+                                        className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 rounded px-2.5 py-1 text-[10px] font-bold text-slate-200"
+                                    >
+                                        Next <i className="fa-solid fa-chevron-right ml-1"></i>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
 
                     </main>
@@ -2107,7 +2311,7 @@
 
         // Render standard entry point
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        root.render(<DashboardErrorBoundary><App /></DashboardErrorBoundary>);
     </script>
 </body>
 </html>
