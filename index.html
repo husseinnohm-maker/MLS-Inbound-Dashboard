@@ -74,13 +74,15 @@
     <!-- Google Identity Services for Drive/OAuth Connection -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
 
+    <!-- PapaParse for robust CSV Parsing (Fixes the 1 record crash on large datasets) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
     <!-- React Application Component script -->
     <script type="text/babel">
         const { useState, useEffect, useMemo, useRef } = React;
 
         // Hardcoded Default Published Google Sheet CSV URL as requested
         const DEFAULT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQUlga7d_wzD6jI-nCCPYgzPtyXalpfewpiKvsy00szeprYTyb0g3BIHs4aKx4n7LqVv8HZTMOUp5gu/pub?output=csv";
-
 
         // Stability helpers: normalize text consistently, parse dates safely, and prevent stalled network requests
         const GRID_PAGE_SIZE = 250;
@@ -140,12 +142,14 @@
                 return { label: raw, year: '', month: '', sort: Number.MAX_SAFE_INTEGER };
             }
 
-            const paddedDay = String(day).padStart(2, '0');
-            const paddedMonth = String(month).padStart(2, '0');
+            // New format: e.g., 1-Jun-2026
+            const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const formattedMonth = monthNames[month - 1];
+
             return {
-                label: `${paddedDay}-${paddedMonth}-${year}`,
+                label: `${day}-${formattedMonth}-${year}`, 
                 year: String(year),
-                month: paddedMonth,
+                month: formattedMonth, 
                 sort: Date.UTC(year, month - 1, day)
             };
         };
@@ -217,7 +221,6 @@
             const [searchTerm, setSearchTerm] = useState('');
             const dropdownRef = useRef(null);
 
-            // Enhancement 6: Performance & Stability listener cleanup
             useEffect(() => {
                 function handleClickOutside(event) {
                     if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -229,7 +232,6 @@
                 return () => document.removeEventListener("mousedown", handleClickOutside);
             }, []);
 
-            // Enhancement 4: Search logic and comma-separated entry detection
             const handleSearch = (e) => {
                 const val = e.target.value;
                 setSearchTerm(val);
@@ -352,7 +354,7 @@
                 inboundType: [],
                 grnStatus: [],
                 delayReason: [],
-                asn: [], // Enhancement 3: Added ASN to State
+                asn: [],
                 searchTerm: ''
             });
 
@@ -387,10 +389,9 @@
                 const inboundTypes = new Set();
                 const grnStatuses = new Set();
                 const delayReasons = new Set();
-                const asns = new Set(); // Enhancement 3: Gather unique ASNs
+                const asns = new Set(); 
 
                 dataset.forEach(row => {
-                    if (row.Date && row.Date !== 'N/A') dates.add(row.Date);
                     if (row.Date_Year) years.add(row.Date_Year);
                     if (row.Date_Month) months.add(row.Date_Month);
                     if (row.Division) divisions.add(row.Division);
@@ -400,7 +401,15 @@
                     if (row.Inbound_Type) inboundTypes.add(row.Inbound_Type);
                     if (row.GRN_Status) grnStatuses.add(row.GRN_Status);
                     if (row.Delay_Reason) delayReasons.add(row.Delay_Reason);
-                    if (row.ASN) asns.add(row.ASN); // Extract ASN
+                    if (row.ASN) asns.add(row.ASN); 
+
+                    // Cascading logic: Only populate dates that match selected Months/Years
+                    const matchesYear = slicers.year.length === 0 || slicers.year.includes(row.Date_Year);
+                    const matchesMonth = slicers.month.length === 0 || slicers.month.includes(row.Date_Month);
+                    
+                    if (matchesYear && matchesMonth && row.Date && row.Date !== 'N/A') {
+                        dates.add(row.Date);
+                    }
                 });
 
                 const alphabetical = (a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
@@ -416,9 +425,9 @@
                     inboundTypes: Array.from(inboundTypes).sort(alphabetical),
                     grnStatuses: Array.from(grnStatuses).sort(alphabetical),
                     delayReasons: Array.from(delayReasons).sort(alphabetical),
-                    asns: Array.from(asns).sort(alphabetical) // Expose ASNs
+                    asns: Array.from(asns).sort(alphabetical) 
                 };
-            }, [dataset]);
+            }, [dataset, slicers.year, slicers.month]); // Added dependency on slicer year and month for cascading
 
             // Toast feedback system
             const showToast = (message, type = 'info') => {
@@ -429,39 +438,10 @@
                 }, 5000);
             };
 
-            // Custom CSV Parser that handles double quotes, escaping, and line breaks safely
+            // PapaParse replaces the custom parseCSV function, fixing the 1-record crash completely.
             const parseCSV = (text) => {
-                const lines = [];
-                let row = [""];
-                let inQuotes = false;
-
-                for (let i = 0; i < text.length; i++) {
-                    const char = text[i];
-                    const nextChar = text[i + 1];
-
-                    if (char === '"') {
-                        if (inQuotes && nextChar === '"') {
-                            row[row.length - 1] += '"';
-                            i++;
-                        } else {
-                            inQuotes = !inQuotes;
-                        }
-                    } else if (char === ',' && !inQuotes) {
-                        row.push('');
-                    } else if ((char === '\r' || char === '\n') && !inQuotes) {
-                        if (char === '\r' && nextChar === '\n') {
-                            i++;
-                        }
-                        lines.push(row);
-                        row = [''];
-                    } else {
-                        row[row.length - 1] += char;
-                    }
-                }
-                if (row.length > 1 || row[0] !== '') {
-                    lines.push(row);
-                }
-                return lines;
+                const parsed = Papa.parse(text, { skipEmptyLines: true });
+                return parsed.data;
             };
 
             // Normalize raw parsed array into standard object keys matching business definitions
@@ -557,7 +537,6 @@
                 showToast("Initiating direct connection to Google Sheets...", "info");
 
                 try {
-                    // Try 1: Direct Fetch - Enhancement 5: Added Cache Buster to prevent stale data
                     const directUrl = `${DEFAULT_CSV_URL}&t=${Date.now()}`;
                     const directResponse = await fetchWithTimeout(directUrl, { cache: "no-store" });
                     if (!directResponse.ok) {
@@ -572,7 +551,6 @@
                     showToast("Direct download blocked. Retrying via secure AllOrigins proxy...", "info");
                     
                     try {
-                        // Try 2: Proxy Fetch using AllOrigins public proxy with cache buster
                         const proxiedUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(DEFAULT_CSV_URL)}&nocache=${Date.now()}`;
                         const proxyResponse = await fetchWithTimeout(proxiedUrl);
                         if (!proxyResponse.ok) {
@@ -630,7 +608,6 @@
                 try {
                     let exportUrl = urlInput;
                     
-                    // If it is a standard sheet link, convert to CSV export format
                     if (urlInput.includes("docs.google.com/spreadsheets") && !urlInput.includes("output=csv") && !urlInput.includes("export?format=csv")) {
                         const sheetIdMatch = urlInput.match(/\/d\/([a-zA-Z0-9-_]+)/);
                         if (!sheetIdMatch) {
@@ -645,7 +622,6 @@
                         exportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
                     }
                     
-                    // Route via AllOrigins CORS proxy
                     const proxiedUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(exportUrl)}&nocache=${Date.now()}`;
                     const response = await fetchWithTimeout(proxiedUrl);
                     if (!response.ok) {
@@ -671,7 +647,6 @@
                 }
             };
 
-            // Simulated Google Login & Drive list (standard compliance fallback without actual workspace server keys)
             const handleGoogleDriveOauth = () => {
                 showToast("OAuth 2.0 flow successfully initiated. Querying user directory context...", "info");
                 setTimeout(() => {
@@ -686,7 +661,6 @@
                 const traceTerm = comparableText(debouncedSearchTerm);
 
                 return dataset.filter(row => {
-                    // Global multiple selection slicers check. Comparisons are case-insensitive and whitespace-safe.
                     if (!hasSelectedValue(slicers.year, row.Date_Year)) return false;
                     if (!hasSelectedValue(slicers.month, row.Date_Month)) return false;
                     if (!hasSelectedValue(slicers.date, row.Date)) return false;
@@ -699,14 +673,12 @@
                     if (!hasSelectedValue(slicers.delayReason, row.Delay_Reason)) return false;
                     if (!hasSelectedValue(slicers.asn, row.ASN)) return false;
 
-                    // Table Inline dropdown headers logic
                     for (const [colKey, filterVal] of Object.entries(tableHeaderFilters)) {
                         if (filterVal && filterVal !== 'ALL' && !sameText(row[colKey], filterVal)) {
                             return false;
                         }
                     }
 
-                    // Text Trace ASN / PO search check
                     if (traceTerm) {
                         const matchSer = comparableText(row.Ser).includes(traceTerm);
                         const matchASN = comparableText(row.ASN).includes(traceTerm);
@@ -763,7 +735,6 @@
                 setGridPage(currentPage => Math.min(currentPage, totalGridPages));
             }, [totalGridPages]);
 
-            // Clear all filters
             const handleClearAllFilters = () => {
                 setSlicers({
                     year: [],
@@ -776,14 +747,13 @@
                     inboundType: [],
                     grnStatus: [],
                     delayReason: [],
-                    asn: [], // Reset ASN
+                    asn: [],
                     searchTerm: ''
                 });
                 setTableHeaderFilters({});
                 showToast("Global filter slicers have been reset.", "info");
             };
 
-            // Interactive chart filters trigger
             const handleSegmentChartFilter = (categoryName, value) => {
                 setSlicers(prev => {
                     const currentList = prev[categoryName] || [];
@@ -798,28 +768,23 @@
                 showToast(`Filter updated: ${categoryName} = ${value}`, "info");
             };
 
-            // Enhancement 2 & 7: Master Operations Audit Grid Export Logic (Refined)
             const exportToExcel = () => {
                 if (filteredDataset.length === 0) {
                     showToast("No data available to export.", "error");
                     return;
                 }
                 try {
-                    // Convert dataset visible directly in the grid to sheet
                     const worksheet = XLSX.utils.json_to_sheet(filteredDataset);
                     const workbook = XLSX.utils.book_new();
                     
-                    // Set worksheet tab name exactly as requested: "Inbound Data"
                     XLSX.utils.book_append_sheet(workbook, worksheet, "Inbound Data");
                     
-                    // Calculate exact system date when clicked (format: YYYY-MM-DD)
                     const now = new Date();
                     const yyyy = now.getFullYear();
                     const mm = String(now.getMonth() + 1).padStart(2, '0');
                     const dd = String(now.getDate()).padStart(2, '0');
                     const dateStr = `${yyyy}-${mm}-${dd}`;
                     
-                    // Set precise naming convention
                     const fileName = `Inbound_Data_${dateStr}.xlsx`;
                     
                     XLSX.writeFile(workbook, fileName);
@@ -848,10 +813,8 @@
                     };
                 }
 
-                // 1. Total ASNs
                 const totalASNs = filteredDataset.length;
 
-                // 2. Physical Trucks (Date + Truck# unique key)
                 const uniqueTrucks = new Set();
                 filteredDataset.forEach(row => {
                     const uniqueKey = `${row.Date}|${row.Truck}`;
@@ -859,31 +822,27 @@
                 });
                 const physicalTrucks = uniqueTrucks.size;
 
-                // 3. Total Quantity Received
                 let totalQty = 0;
                 filteredDataset.forEach(row => {
                     totalQty += row.Total_Qty;
                 });
 
-                // 4. On-Time Receiving Rate
                 let compliantOffloadRowsCount = 0;
                 let validOffloadRowsCount = 0;
                 let totalDurationMinutes = 0;
 
                 filteredDataset.forEach(row => {
                     const durationInMin = parseDurationMinutes(row.Off_Loading_Duration);
-                    if (durationInMin === null) return; // Skip entirely as per exclusion rules
+                    if (durationInMin === null) return; 
 
                     validOffloadRowsCount++;
                     totalDurationMinutes += durationInMin;
 
-                    // SLA Threshold: Palletized vs Un-palletized
                     if (sameText(row.Inbound_Type, 'PALLETIZED')) {
                         if (durationInMin <= 120) compliantOffloadRowsCount++;
                     } else if (sameText(row.Inbound_Type, 'UN-PALLETIZED')) {
                         if (durationInMin <= 360) compliantOffloadRowsCount++;
                     } else {
-                        // Standard generic benchmark fallback if blank type
                         if (durationInMin <= 240) compliantOffloadRowsCount++;
                     }
                 });
@@ -892,7 +851,6 @@
                     ? ((compliantOffloadRowsCount / validOffloadRowsCount) * 100).toFixed(1)
                     : "0.0";
 
-                // 5. GRN Compliance Rate & GRN Pending Rate Box Calculations
                 let compliantGRNCount = 0;
                 let pendingGRNCount = 0;
                 filteredDataset.forEach(row => {
@@ -915,25 +873,21 @@
                     ? ((pendingGRNCount / filteredDataset.length) * 100).toFixed(1)
                     : "0.0";
 
-                // 6. Quality Issues
                 let qualityIssues = 0;
                 filteredDataset.forEach(row => {
                     qualityIssues += (row.Damage_Qty + row.Shortage_Qty + row.Excess_Qty);
                 });
 
-                // 7. Total Pallets Handled
                 let palletsHandled = 0;
                 filteredDataset.forEach(row => {
                     palletsHandled += row.Total_Pallets;
                 });
 
-                // 8. Total Put-Away Lines
                 let putAwayLines = 0;
                 filteredDataset.forEach(row => {
                     putAwayLines += row.PutAway_Lines;
                 });
 
-                // Average Offloading Duration Formatted
                 const avgMin = validOffloadRowsCount > 0 ? (totalDurationMinutes / validOffloadRowsCount) : 0;
                 const hours = Math.floor(avgMin / 60);
                 const minutes = Math.round(avgMin % 60);
@@ -958,7 +912,6 @@
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
-                // Group by date
                 const dateMap = {};
                 filteredDataset.forEach(row => {
                     const d = row.Date;
@@ -1043,13 +996,12 @@
                     chart.render();
                 }
 
-                // Enhancement 6: Performance cleanup
                 return () => {
                     if (chart) chart.destroy();
                 };
             }, [filteredDataset]);
 
-            // Chart B Render (Donut - Division Split)
+            // Chart B Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1111,15 +1063,13 @@
                 };
             }, [filteredDataset]);
 
-            // Chart C Render (Stacked Column - GRN Status & Performance Grid)
+            // Chart C Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
-                // Categories (Trx Type)
                 const trxTypes = Array.from(new Set(filteredDataset.map(r => r.Trx_Type)));
                 const statusCategories = ['Sent', 'Received', 'Pending'];
 
-                // Prepare series arrays
                 const seriesMap = {
                     'Sent': trxTypes.map(() => 0),
                     'Received': trxTypes.map(() => 0),
@@ -1176,7 +1126,7 @@
                 };
             }, [filteredDataset]);
 
-            // Chart D Render (Horizontal Bar - Shipment Mode Mix)
+            // Chart D Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1223,7 +1173,7 @@
                 };
             }, [filteredDataset]);
 
-            // Chart E Render (Bar Chart - Offloading Speed Floor Efficiency)
+            // Chart E Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1280,7 +1230,7 @@
                 };
             }, [filteredDataset]);
 
-            // Chart F Render (Root-Cause Delay Pareto Matrix - filtered to hide 'No Delay / Normal' placeholder records)
+            // Chart F Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1289,7 +1239,6 @@
                     const r = (row.Delay_Reason || '').trim();
                     if (r) {
                         const lowerR = r.toLowerCase();
-                        // Exclude non-delay status values to focus exclusively on bottlenecks
                         if (
                             lowerR !== 'no delay' && 
                             lowerR !== 'normal' && 
@@ -1303,7 +1252,6 @@
                     }
                 });
 
-                // Sort descending to establish Pareto representation
                 const sorted = Object.entries(reasons).sort((a,b) => b[1] - a[1]);
                 const categories = sorted.map(item => item[0]);
                 const seriesData = sorted.map(item => item[1]);
@@ -1340,21 +1288,18 @@
                 };
             }, [filteredDataset]);
 
-            // Enhancement 1: Chart G Render (Storage Zone Footprint)
+            // Chart G Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
-                // Enforce exact requested order
                 const zones = ['Dry', 'Ambient', 'Chilled', 'Frozen'];
                 const palletsByZone = [0, 0, 0, 0];
                 const putawayByZone = [0, 0, 0, 0];
 
                 filteredDataset.forEach(row => {
-                    // Pull explicit Storage_Type from source, trim it safely
                     const zoneType = row.Storage_Type ? row.Storage_Type.trim() : 'Dry';
                     const zIdx = zones.findIndex(z => z.toLowerCase() === zoneType.toLowerCase());
                     
-                    // Aggregate if matches strict zones array, otherwise map to Dry to prevent data loss
                     if (zIdx !== -1) {
                         palletsByZone[zIdx] += row.Total_Pallets;
                         putawayByZone[zIdx] += row.PutAway_Lines;
@@ -1398,13 +1343,11 @@
                     chart.render();
                 }
 
-                // Performance cleanup
                 return () => {
                     if (chart) chart.destroy();
                 };
             }, [filteredDataset]);
 
-            // Dynamic Option list generator helper for Header Table Dropdowns
             const getUniqueHeaderFilterOptions = (columnName) => {
                 const valuesByKey = new Map();
                 dataset.forEach(row => {
@@ -1481,7 +1424,6 @@
                                 {/* DIRECT DATA OPTIONS CARDS */}
                                 <div className="space-y-4 text-left">
                                     
-                                    {/* Option 1: Live Fetch Database */}
                                     <button 
                                         onClick={fetchDefaultDatabase}
                                         disabled={isLoading}
@@ -1501,7 +1443,6 @@
                                         <i className="fa-solid fa-arrows-rotate text-slate-500 group-hover:text-neonBlue text-xs"></i>
                                     </button>
 
-                                    {/* Option 2: Choose Inbound CSV File */}
                                     <label className="w-full bg-slate-800/60 hover:bg-slate-800 border border-slate-700 hover:border-emeraldNeon rounded-xl p-4 transition-all duration-200 flex items-center justify-between cursor-pointer group">
                                         <div className="flex items-center gap-3">
                                             <div className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-700 flex items-center justify-center text-emeraldNeon">
@@ -1524,7 +1465,6 @@
                                         <i className="fa-solid fa-upload text-slate-500 group-hover:text-emeraldNeon text-xs"></i>
                                     </label>
 
-                                    {/* Option 3: Connect Google Drive */}
                                     <button 
                                         onClick={() => {
                                             setShowGoogleModal(true);
@@ -1580,7 +1520,6 @@
                                 </p>
 
                                 <div className="space-y-5">
-                                    {/* Direct Sheet url parser */}
                                     <div className="space-y-1">
                                         <label className="text-[11px] uppercase text-slate-400 font-bold block">Google Sheets Link URL</label>
                                         <div className="flex gap-2">
@@ -1611,7 +1550,6 @@
                                         </button>
                                     </div>
 
-                                    {/* Pre-uploaded file emergency fallback */}
                                     <div className="border-t border-slate-800 pt-4 text-center">
                                         <button 
                                             onClick={fetchDefaultDatabase}
@@ -1640,7 +1578,6 @@
                             </div>
                         </div>
 
-                        {/* Top action buttons */}
                         <div className="flex items-center gap-2">
                             <button 
                                 onClick={fetchDefaultDatabase}
@@ -1681,7 +1618,6 @@
                                     Global Multi-Select Control Panel
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    {/* Active indicators */}
                                     <span className="text-[10px] text-slate-400 font-medium">
                                         Showing <strong className="text-neonBlue">{filteredDataset.length}</strong> of {dataset.length} records
                                     </span>
@@ -1694,10 +1630,8 @@
                                 </div>
                             </div>
 
-                            {/* Multiple selection custom select filters grid */}
                             <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-11 gap-2">
                                 
-                                {/* 1. Year */}
                                 <MultiSelect 
                                     label="Year"
                                     options={dynamicSlicerOptions.years}
@@ -1706,7 +1640,6 @@
                                     placeholder="Years"
                                 />
 
-                                {/* 2. Month */}
                                 <MultiSelect 
                                     label="Month"
                                     options={dynamicSlicerOptions.months}
@@ -1715,7 +1648,6 @@
                                     placeholder="Months"
                                 />
 
-                                {/* 3. Date */}
                                 <MultiSelect 
                                     label="Date"
                                     options={dynamicSlicerOptions.dates}
@@ -1724,7 +1656,6 @@
                                     placeholder="Dates"
                                 />
 
-                                {/* 4. Division */}
                                 <MultiSelect 
                                     label="Division"
                                     options={dynamicSlicerOptions.divisions}
@@ -1733,7 +1664,6 @@
                                     placeholder="Divisions"
                                 />
 
-                                {/* 5. Warehouse */}
                                 <MultiSelect 
                                     label="Warehouse"
                                     options={dynamicSlicerOptions.warehouses}
@@ -1742,7 +1672,6 @@
                                     placeholder="WHs"
                                 />
 
-                                {/* 6. Trx Type */}
                                 <MultiSelect 
                                     label="Trx Type"
                                     options={dynamicSlicerOptions.trxTypes}
@@ -1751,7 +1680,6 @@
                                     placeholder="Trx"
                                 />
 
-                                {/* 7. Shipment Type */}
                                 <MultiSelect 
                                     label="Shipment Mode"
                                     options={dynamicSlicerOptions.shipmentTypes}
@@ -1760,7 +1688,6 @@
                                     placeholder="Modes"
                                 />
 
-                                {/* 8. Inbound Type */}
                                 <MultiSelect 
                                     label="Inbound Cargo"
                                     options={dynamicSlicerOptions.inboundTypes}
@@ -1769,7 +1696,6 @@
                                     placeholder="Cargo"
                                 />
 
-                                {/* 9. GRN Status */}
                                 <MultiSelect 
                                     label="GRN Status"
                                     options={dynamicSlicerOptions.grnStatuses}
@@ -1778,7 +1704,6 @@
                                     placeholder="GRN"
                                 />
 
-                                {/* 10. Enhancement 3: ASN / PO Filter */}
                                 <MultiSelect 
                                     label="ASN/PO"
                                     options={dynamicSlicerOptions.asns}
@@ -1787,7 +1712,6 @@
                                     placeholder="ASNs"
                                 />
 
-                                {/* 11. Trace Search */}
                                 <div className="space-y-1">
                                     <label className="text-[9px] text-slate-400 uppercase font-semibold block">Text Trace</label>
                                     <div className="relative">
@@ -1813,13 +1737,10 @@
                         </div>
                     </div>
 
-                    {/* MAIN WORKSPACE CONTENT */}
                     <main className="flex-1 p-6 space-y-6">
 
-                        {/* SUPPLY CHAIN KEY METRIC TILES - Auto Grid scaling for 10 cards */}
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-3">
                             
-                            {/* KPI 1 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">ASNs Logged</span>
@@ -1831,7 +1752,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 2 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Physical Trucks</span>
@@ -1843,7 +1763,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 3 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Qty Received</span>
@@ -1855,7 +1774,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 4 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between relative overflow-hidden">
                                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emeraldNeon to-neonBlue"></div>
                                 <div className="flex items-center justify-between">
@@ -1868,7 +1786,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 5 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between relative overflow-hidden">
                                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amberNeon to-emeraldNeon"></div>
                                 <div className="flex items-center justify-between">
@@ -1881,7 +1798,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 6 - Pending rate metric tile */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between relative overflow-hidden">
                                 <div className="absolute top-0 left-0 w-full h-1 bg-amberNeon"></div>
                                 <div className="flex items-center justify-between">
@@ -1894,7 +1810,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 7 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Quality Issues</span>
@@ -1908,7 +1823,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 8 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Pallets</span>
@@ -1920,7 +1834,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 9 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Put-Away Lines</span>
@@ -1932,7 +1845,6 @@
                                 </div>
                             </div>
 
-                            {/* KPI 10 */}
                             <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-xl flex flex-col justify-between">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Avg Offload Time</span>
@@ -1946,10 +1858,8 @@
 
                         </div>
 
-                        {/* APEX CHARTS ANALYTICS VIEW */}
                         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                             
-                            {/* Chart A: Volume vs Consolidation Trends (Double spanned for priority) */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-8">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center justify-between">
                                     <span>Volume vs. Consolidation Trends</span>
@@ -1962,7 +1872,6 @@
                                 </div>
                             </div>
 
-                            {/* Chart B: Division Volume Split */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-4">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center justify-between">
                                     <span>Division Volume Split</span>
@@ -1975,8 +1884,6 @@
                                 </div>
                             </div>
 
-                            {/* Row 2 of Charts */}
-                            {/* Chart C: GRN Status Performance Grid */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-4">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3">GRN Status & Performance Grid</h4>
                                 <div id="chart-grn">
@@ -1986,7 +1893,6 @@
                                 </div>
                             </div>
 
-                            {/* Chart D: Shipment Mode Mix */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-4">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3">Shipment Mode Mix</h4>
                                 <div id="chart-shipment">
@@ -1996,7 +1902,6 @@
                                 </div>
                             </div>
 
-                            {/* Chart E: Floor Efficiency Speeds */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-4">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3">Floor Efficiency Processing Speeds</h4>
                                 <div id="chart-efficiency">
@@ -2006,8 +1911,6 @@
                                 </div>
                             </div>
 
-                            {/* Row 3 of Charts */}
-                            {/* Chart F: Root-Cause Delay Pareto Matrix */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-6">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 text-crimsonNeon">Root-Cause Delay Pareto Matrix</h4>
                                 <div id="chart-delay">
@@ -2017,7 +1920,6 @@
                                 </div>
                             </div>
 
-                            {/* Chart G: Storage Zone Footprint */}
                             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl lg:col-span-6">
                                 <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 text-neonBlue">Storage Zone Footprint</h4>
                                 <div id="chart-storage">
@@ -2029,7 +1931,6 @@
 
                         </div>
 
-                        {/* MASTER OPERATIONS AUDIT GRID WITH INLINE FILTERS */}
                         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
                             <div className="p-4 bg-slate-850/50 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
                                 <div className="flex items-center gap-2">
@@ -2042,7 +1943,6 @@
                                     <div className="text-[10px] text-slate-400 font-medium hidden md:block">
                                         Directly filter each column independently using dropdown filters inside column headers.
                                     </div>
-                                    {/* Enhancement 2: Export Button */}
                                     <button 
                                         onClick={exportToExcel}
                                         className="bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/50 hover:border-emerald-400 text-emerald-400 rounded px-3 py-1.5 text-[10px] font-bold transition flex items-center gap-2"
@@ -2057,13 +1957,11 @@
                                 <table className="w-full text-[11px] text-left border-collapse">
                                     <thead className="sticky top-0 bg-slate-950 z-25 text-slate-400 uppercase border-b border-slate-800 text-[10px] font-bold">
                                         <tr>
-                                            {/* Ser# Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Ser#</span>
                                                 </div>
                                             </th>
-                                            {/* WH Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>WH</span>
@@ -2076,7 +1974,6 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* Date Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Date</span>
@@ -2089,19 +1986,16 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* ASN# Header */}
                                             <th className="p-3 border-r border-slate-800 min-w-[120px]">
                                                 <div className="flex flex-col gap-1">
                                                     <span>ASN#/Child PO</span>
                                                 </div>
                                             </th>
-                                            {/* Truck# Header */}
                                             <th className="p-3 border-r border-slate-800 min-w-[100px]">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Truck#</span>
                                                 </div>
                                             </th>
-                                            {/* Division Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Division</span>
@@ -2114,7 +2008,6 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* Trx Type Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Trx Type</span>
@@ -2127,7 +2020,6 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* Shipment Type Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Shipment</span>
@@ -2140,7 +2032,6 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* Inbound Type Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Inbound Type</span>
@@ -2153,15 +2044,10 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* Total Qty Header */}
                                             <th className="p-3 border-r border-slate-800">Total Qty</th>
-                                            {/* Damage Qty Header */}
                                             <th className="p-3 border-r border-slate-800">Damage</th>
-                                            {/* Shortage Header */}
                                             <th className="p-3 border-r border-slate-800">Shortage</th>
-                                            {/* Total Pallets Header */}
                                             <th className="p-3 border-r border-slate-800">Pallets</th>
-                                            {/* GRN Status Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>GRN Status</span>
@@ -2174,7 +2060,6 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* GRN KPI Header */}
                                             <th className="p-3 border-r border-slate-800">
                                                 <div className="flex flex-col gap-1">
                                                     <span>GRN KPI</span>
@@ -2187,11 +2072,8 @@
                                                     </select>
                                                 </div>
                                             </th>
-                                            {/* PO/ASN On Time Header */}
                                             <th className="p-3 border-r border-slate-800">On Time</th>
-                                            {/* Off Loading Duration Header */}
                                             <th className="p-3 border-r border-slate-800">Duration</th>
-                                            {/* Delay Reason Header */}
                                             <th className="p-3">
                                                 <div className="flex flex-col gap-1">
                                                     <span>Delay Reason</span>
