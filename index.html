@@ -74,7 +74,7 @@
     <!-- Google Identity Services for Drive/OAuth Connection -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
 
-    <!-- PapaParse for robust CSV Parsing (Fixes the 1 record crash on large datasets) -->
+    <!-- CRUCIAL: PapaParse for robust CSV Parsing (Fixes the 1 record crash on large datasets) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 
     <!-- React Application Component script -->
@@ -142,7 +142,7 @@
                 return { label: raw, year: '', month: '', sort: Number.MAX_SAFE_INTEGER };
             }
 
-            // New format: e.g., 1-Jun-2026
+            // Updated Format to: 1-Jun-2026
             const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
             const formattedMonth = monthNames[month - 1];
 
@@ -215,7 +215,6 @@
             }
         }
 
-        // Reusable custom React component for elegant slate multi-selection dropdowns
         function MultiSelect({ label, options, selectedValues, onChange, placeholder }) {
             const [isOpen, setIsOpen] = useState(false);
             const [searchTerm, setSearchTerm] = useState('');
@@ -236,7 +235,6 @@
                 const val = e.target.value;
                 setSearchTerm(val);
 
-                // Detect comma-separated pasting (e.g., 111,222,333)
                 if (val.includes(',')) {
                     const parts = val.split(',').map(p => p.trim().toLowerCase()).filter(p => p);
                     if (parts.length > 0) {
@@ -244,7 +242,7 @@
                         if (matchingOptions.length > 0) {
                             const newSelections = Array.from(new Set([...selectedValues, ...matchingOptions]));
                             onChange(newSelections);
-                            setSearchTerm(''); // Reset search after bulk add
+                            setSearchTerm('');
                         }
                     }
                 }
@@ -285,7 +283,6 @@
                     
                     {isOpen && (
                         <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded shadow-xl flex flex-col max-h-64 min-w-[180px]">
-                            {/* Search Input Box */}
                             <div className="p-1.5 border-b border-slate-800">
                                 <input 
                                     type="text" 
@@ -361,7 +358,6 @@
             // Column Dropdown filters state (for inline table headers)
             const [tableHeaderFilters, setTableHeaderFilters] = useState({});
 
-            // Grid pagination prevents the browser from rendering tens of thousands of table rows at once.
             const [gridPage, setGridPage] = useState(1);
             const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
 
@@ -389,7 +385,7 @@
                 const inboundTypes = new Set();
                 const grnStatuses = new Set();
                 const delayReasons = new Set();
-                const asns = new Set(); // Enhancement 3: Gather unique ASNs
+                const asns = new Set(); 
 
                 dataset.forEach(row => {
                     if (row.Date_Year) years.add(row.Date_Year);
@@ -401,9 +397,9 @@
                     if (row.Inbound_Type) inboundTypes.add(row.Inbound_Type);
                     if (row.GRN_Status) grnStatuses.add(row.GRN_Status);
                     if (row.Delay_Reason) delayReasons.add(row.Delay_Reason);
-                    if (row.ASN) asns.add(row.ASN); // Extract ASN
+                    if (row.ASN) asns.add(row.ASN); 
 
-                    // Cascading filter logic: Only populate dates that match selected Months/Years
+                    // Cascading logic: Only populate dates that match selected Months/Years
                     const matchesYear = slicers.year.length === 0 || slicers.year.includes(row.Date_Year);
                     const matchesMonth = slicers.month.length === 0 || slicers.month.includes(row.Date_Month);
                     
@@ -425,11 +421,10 @@
                     inboundTypes: Array.from(inboundTypes).sort(alphabetical),
                     grnStatuses: Array.from(grnStatuses).sort(alphabetical),
                     delayReasons: Array.from(delayReasons).sort(alphabetical),
-                    asns: Array.from(asns).sort(alphabetical) // Expose ASNs
+                    asns: Array.from(asns).sort(alphabetical)
                 };
-            }, [dataset, slicers.year, slicers.month]);
+            }, [dataset, slicers.year, slicers.month]); // Dependent on Year/Month for cascading
 
-            // Toast feedback system
             const showToast = (message, type = 'info') => {
                 const id = Date.now();
                 setToasts(prev => [...prev, { id, message, type }]);
@@ -438,22 +433,28 @@
                 }, 5000);
             };
 
-            // PapaParse replaces the custom parseCSV function, fixing the 1-record crash completely.
+            // Replaces the old buggy text loop with the stable PapaParse implementation
             const parseCSV = (text) => {
                 const parsed = Papa.parse(text, { skipEmptyLines: true });
                 return parsed.data;
             };
 
-            // Normalize raw parsed array into standard object keys matching business definitions
             const processParsedRawData = (rows) => {
                 if (!rows || rows.length < 2) {
                     showToast("Insufficient data or empty spreadsheet format detected.", "error");
                     return false;
                 }
 
+                // Guard to detect if Google returns an HTML error page (like 'Document too large') instead of CSV data
+                const firstCell = String(rows[0][0] || '').trim().toLowerCase();
+                if (firstCell.startsWith('<!doctype') || firstCell.startsWith('<html')) {
+                    showToast("Connection Denied: Google returned an HTML page instead of CSV.", "error");
+                    setLoadError("Google Sheets blocked the request. This happens if the sheet is restricted, or if the 'Published' link reached a size limit. Click 'Connect Feed Source' and paste the standard sharing link instead.");
+                    return false;
+                }
+
                 const headers = rows[0].map(h => cleanText(h));
                 
-                // Helper to locate target column indices
                 const findIdx = (names) => {
                     for (let name of names) {
                         const idx = headers.findIndex(h => h.toLowerCase() === name.toLowerCase());
@@ -493,7 +494,6 @@
                     const valueAt = (idx, fallback = '') => idx >= 0 ? cleanText(rowData[idx], fallback) : fallback;
                     const dateMeta = parseSheetDate(valueAt(idxDate, 'N/A'));
 
-                    // Standardize object structure. Division casing is normalized during import to stop duplicate slicer entries.
                     formatted.push({
                         Ser: valueAt(idxSer, r.toString()),
                         WH: valueAt(idxWH, 'Unknown'),
@@ -530,7 +530,6 @@
                 return true;
             };
 
-            // Automated Fetch directly from hardcoded Google Sheet CSV link with CORS fallbacks
             const fetchDefaultDatabase = async () => {
                 setIsLoading(true);
                 setLoadError(null);
@@ -575,7 +574,6 @@
                 }
             };
 
-            // Local Upload triggers
             const handleLocalFileUpload = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
@@ -595,7 +593,6 @@
                 reader.readAsText(file);
             };
 
-            // Connect using online Google Sheet Link
             const connectGoogleSheetLink = async () => {
                 const urlInput = gdriveConfig.sheetUrl.trim();
                 if (!urlInput) {
@@ -656,7 +653,6 @@
                 }, 1500);
             };
 
-            // Global Filter Logic applying to dataset
             const filteredDataset = useMemo(() => {
                 const traceTerm = comparableText(debouncedSearchTerm);
 
@@ -747,7 +743,7 @@
                     inboundType: [],
                     grnStatus: [],
                     delayReason: [],
-                    asn: [],
+                    asn: [], 
                     searchTerm: ''
                 });
                 setTableHeaderFilters({});
@@ -795,7 +791,6 @@
                 }
             };
 
-            // Supply Chain Metrics Calculations
             const metrics = useMemo(() => {
                 if (!filteredDataset.length) {
                     return {
@@ -908,7 +903,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart A Render Component
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1001,7 +995,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart B Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1063,7 +1056,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart C Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1126,7 +1118,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart D Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1173,7 +1164,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart E Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1230,7 +1220,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart F Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1288,7 +1277,6 @@
                 };
             }, [filteredDataset]);
 
-            // Chart G Render
             useEffect(() => {
                 if (filteredDataset.length === 0) return;
 
@@ -1415,8 +1403,8 @@
                                     <div className="mb-6 p-3 bg-red-950/60 border border-red-500/50 rounded-xl text-left text-xs text-red-200 flex items-start gap-2.5">
                                         <i className="fa-solid fa-circle-exclamation text-red-400 mt-0.5"></i>
                                         <div>
-                                            <strong className="block font-bold">Auto-fetch error:</strong>
-                                            <span className="text-[11px] text-red-300">{loadError}</span>
+                                            <strong className="block font-bold">Connection Error:</strong>
+                                            <span className="text-[11px] text-red-300 block mt-1">{loadError}</span>
                                         </div>
                                     </div>
                                 )}
@@ -1737,6 +1725,7 @@
                         </div>
                     </div>
 
+                    {/* MAIN WORKSPACE CONTENT */}
                     <main className="flex-1 p-6 space-y-6">
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-3">
