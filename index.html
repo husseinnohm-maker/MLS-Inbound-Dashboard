@@ -1382,10 +1382,10 @@
                 const options = {
                     series: [{
                         name: 'Pallets Handled',
-                        data: palletsByZone
+                        data: palletsByZone.map(v => Math.round(v))
                     }, {
                         name: 'Put-Away Lines',
-                        data: putawayByZone
+                        data: putawayByZone.map(v => Math.round(v))
                     }],
                     chart: { type: 'bar', height: 280, toolbar: { show: false } },
                     colors: ['#00f6ff', '#f59e0b'],
@@ -1394,6 +1394,23 @@
                             horizontal: false,
                             columnWidth: '55%',
                             borderRadius: 4
+                        }
+                    },
+                    dataLabels: {
+                        enabled: true,
+                        style: {
+                            fontSize: '10px'
+                        },
+                        formatter: function (val) {
+                            return Math.round(val).toLocaleString();
+                        }
+                    },
+                    yaxis: {
+                        labels: {
+                            formatter: function (val) {
+                                return Math.round(val).toLocaleString();
+                            },
+                            style: { colors: '#94a3b8' }
                         }
                     },
                     theme: { mode: 'dark' },
